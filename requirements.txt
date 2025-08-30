@@ -1,5 +1,6 @@
 streamlit
 speechrecognition
+python-dotenv
 langchain
 langchain-community
 langchain-huggingface
