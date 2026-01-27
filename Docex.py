@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -13,26 +13,20 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
 # --------------------------------------------------
-# ENV SETUP
+# ENV
 # --------------------------------------------------
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not GROQ_API_KEY:
-    st.error("❌ GROQ_API_KEY not found. Add it to .env or Streamlit secrets.")
+    st.error("❌ GROQ_API_KEY missing")
     st.stop()
 
 # --------------------------------------------------
-# STREAMLIT CONFIG
+# STREAMLIT
 # --------------------------------------------------
-st.set_page_config(
-    page_title="DocEx 📄🤖",
-    page_icon="📄",
-    layout="wide"
-)
-
-st.title("📄 DocEx – Chat with your Documents")
-st.caption("Powered by Groq + LangChain")
+st.set_page_config(page_title="DocEx", page_icon="📄", layout="wide")
+st.title("📄 DocEx – Chat with PDF")
 
 # --------------------------------------------------
 # LLM
@@ -44,36 +38,34 @@ llm = ChatGroq(
 )
 
 # --------------------------------------------------
-# FILE UPLOAD
+# UPLOAD
 # --------------------------------------------------
-uploaded_file = st.file_uploader("Upload a PDF document", type=["pdf"])
+file = st.file_uploader("Upload a PDF", type="pdf")
 
-if uploaded_file:
+if file:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(uploaded_file.read())
+        tmp.write(file.read())
         pdf_path = tmp.name
 
-    # Load PDF
     loader = PyPDFLoader(pdf_path)
-    documents = loader.load()
+    docs = loader.load()
 
-    # Embeddings
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-    # Vector Store
-    vectorstore = FAISS.from_documents(documents, embeddings)
+    vectorstore = Chroma.from_documents(
+        docs,
+        embeddings,
+        persist_directory="./chroma_db"
+    )
+
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
-    # --------------------------------------------------
-    # PROMPT
-    # --------------------------------------------------
     prompt = ChatPromptTemplate.from_template(
         """
-        You are a helpful AI assistant.
-        Answer the question ONLY using the context below.
-        If the answer is not present, say "I couldn't find that in the document."
+        Answer ONLY using the context below.
+        If not found, say you don't know.
 
         Context:
         {context}
@@ -83,44 +75,32 @@ if uploaded_file:
         """
     )
 
-    # --------------------------------------------------
-    # RAG CHAIN (NEW v0.2 STYLE)
-    # --------------------------------------------------
     def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
+        return "\n\n".join(d.page_content for d in docs)
 
-    rag_chain = (
+    chain = (
         {
             "context": retriever | format_docs,
-            "question": RunnablePassthrough(),
+            "question": RunnablePassthrough()
         }
         | prompt
         | llm
         | StrOutputParser()
     )
 
-    # --------------------------------------------------
-    # CHAT UI
-    # --------------------------------------------------
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+    if "history" not in st.session_state:
+        st.session_state.history = []
 
-    user_input = st.chat_input("Ask something about the document...")
+    user_q = st.chat_input("Ask about the document")
 
-    if user_input:
-        st.session_state.chat_history.append(("user", user_input))
-
+    if user_q:
+        st.session_state.history.append(("user", user_q))
         with st.spinner("Thinking..."):
-            response = rag_chain.invoke(user_input)
+            ans = chain.invoke(user_q)
+        st.session_state.history.append(("ai", ans))
 
-        st.session_state.chat_history.append(("ai", response))
-
-    # Display chat
-    for role, msg in st.session_state.chat_history:
-        if role == "user":
-            st.chat_message("user").write(msg)
-        else:
-            st.chat_message("assistant").write(msg)
+    for role, msg in st.session_state.history:
+        st.chat_message("user" if role == "user" else "assistant").write(msg)
 
 else:
-    st.info("📂 Upload a PDF to start chatting.")
+    st.info("Upload a PDF to begin")
