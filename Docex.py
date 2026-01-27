@@ -33,8 +33,7 @@ st.title("📄 DocEx – Chat with PDF")
 # --------------------------------------------------
 llm = ChatGroq(
     groq_api_key=GROQ_API_KEY,
-    model_name="llama-3.1-8b-instant"
-",
+    model_name="llama-3.1-8b-instant",
     temperature=0.2
 )
 
