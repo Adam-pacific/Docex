@@ -1,255 +1,126 @@
-import streamlit as st
 import os
-import speech_recognition as sr
+import tempfile
+import streamlit as st
 from dotenv import load_dotenv
 
-# LangChain Core
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain.tools import Tool
-
-# Embeddings & Vector DB
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-
-# Loaders
-from langchain_community.document_loaders import (
-    WebBaseLoader,
-    PyPDFLoader,
-    TextLoader,
-    Docx2txtLoader
-)
-
-# Splitter
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-# Retriever tool
-from langchain.tools.retriever import create_retriever_tool
-
-# External tools
-from langchain_community.utilities import WikipediaAPIWrapper, ArxivAPIWrapper
-
-# Agent + LLM
 from langchain_groq import ChatGroq
-from langchain.agents import create_openai_tools_agent, AgentExecutor
-from langchain import hub
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
 
-# ----------------------------
-# ENV
-# ----------------------------
-load_dotenv()
-
-# ----------------------------
-# Streamlit UI
-# ----------------------------
-st.set_page_config(page_title="DocEx", page_icon="📄")
-st.title("📄 DocEx – Universal Document Chatbot")
-
-st.caption("Chat with PDFs, documents, and websites using AI")
-
-# ----------------------------
-# Session State
-# ----------------------------
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-if "retriever" not in st.session_state:
-    st.session_state.retriever = None
-
-# ----------------------------
-# File Upload & URL Input
-# ----------------------------
-st.subheader("📤 Upload Documents or Paste Website URL")
-
-uploaded_files = st.file_uploader(
-    "Upload PDF, DOCX, or TXT files",
-    type=["pdf", "docx", "txt"],
-    accept_multiple_files=True
-)
-
-url_input = st.text_input("Website URL (optional)")
-
-process_btn = st.button("🔍 Process Documents")
-
-# ----------------------------
-# Document Processing
-# ----------------------------
-if process_btn:
-    docs = []
-
-    # Handle file uploads
-    if uploaded_files:
-        for file in uploaded_files:
-            file_path = f"/tmp/{file.name}"
-            with open(file_path, "wb") as f:
-                f.write(file.read())
-
-            if file.name.endswith(".pdf"):
-                loader = PyPDFLoader(file_path)
-            elif file.name.endswith(".txt"):
-                loader = TextLoader(file_path)
-            elif file.name.endswith(".docx"):
-                loader = Docx2txtLoader(file_path)
-
-            docs.extend(loader.load())
-
-    # Handle website URL
-    if url_input:
-        loader = WebBaseLoader(url_input)
-        docs.extend(loader.load())
-
-    if not docs:
-        st.warning("Please upload a document or provide a URL.")
-    else:
-        with st.spinner("Processing documents..."):
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200
-            )
-
-            split_docs = splitter.split_documents(docs)
-
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2"
-            )
-
-            vectordb = FAISS.from_documents(split_docs, embeddings)
-            st.session_state.retriever = vectordb.as_retriever()
-
-        st.success("✅ Documents processed successfully! You can now chat.")
-
-# ----------------------------
-# Tools
-# ----------------------------
-wiki = Tool(
-    name="wikipedia",
-    func=WikipediaAPIWrapper(
-        top_k_results=3,
-        doc_content_chars_max=1000
-    ).run,
-    description="Use for general world knowledge not in documents."
-)
-
-arxiv = Tool(
-    name="arxiv",
-    func=ArxivAPIWrapper(
-        top_k_results=1,
-        doc_content_chars_max=500
-    ).run,
-    description="Use for academic or research paper queries."
-)
-
-tools = [wiki, arxiv]
-
-# Add document retriever tool dynamically
-if st.session_state.retriever:
-    doc_tool = create_retriever_tool(
-        st.session_state.retriever,
-        "Document_Retriever",
-        "Answer questions ONLY using the uploaded documents or provided website. "
-        "If information is missing, say it is not found."
-    )
-    tools.insert(0, doc_tool)
-
-# ----------------------------
-# LLM
-# ----------------------------
-llm = ChatGroq(
-    model="openai/gpt-oss-120b",
-    temperature=0.3,
-    api_key=os.getenv("GROQ_API_KEY")
-)
-
-# ----------------------------
-# Agent
-# ----------------------------
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 
-base_prompt = hub.pull("hwchase17/openai-functions-agent")
+# --------------------------------------------------
+# ENV SETUP
+# --------------------------------------------------
+load_dotenv()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-system_prompt = """
-You are a document-based assistant.
+if not GROQ_API_KEY:
+    st.error("❌ GROQ_API_KEY not found. Add it to .env or Streamlit secrets.")
+    st.stop()
 
-Rules:
-- Always use Document_Retriever when available.
-- Don't Answer only from the provided documents, try to use your own knowledge as well.
-- If the answer is not in the documents, say:
-  "Not found in the provided content."
-- Do NOT hallucinate.
-"""
-
-prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", system_prompt),
-        *base_prompt.messages[1:]  # keep rest of original prompt
-    ]
+# --------------------------------------------------
+# STREAMLIT CONFIG
+# --------------------------------------------------
+st.set_page_config(
+    page_title="DocEx 📄🤖",
+    page_icon="📄",
+    layout="wide"
 )
 
+st.title("📄 DocEx – Chat with your Documents")
+st.caption("Powered by Groq + LangChain")
 
-agent = create_openai_tools_agent(llm, tools, prompt)
-
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=tools,
-    verbose=True,
-    max_iterations=8,
-    handle_parsing_errors=True
+# --------------------------------------------------
+# LLM
+# --------------------------------------------------
+llm = ChatGroq(
+    groq_api_key=GROQ_API_KEY,
+    model_name="llama3-8b-8192",
+    temperature=0.2
 )
 
-# ----------------------------
-# Voice Input
-# ----------------------------
-recognizer = sr.Recognizer()
-voice_input = None
+# --------------------------------------------------
+# FILE UPLOAD
+# --------------------------------------------------
+uploaded_file = st.file_uploader("Upload a PDF document", type=["pdf"])
 
-if st.button("🎙️ Speak"):
-    with sr.Microphone() as source:
-        st.info("Listening...")
-        recognizer.adjust_for_ambient_noise(source)
-        audio = recognizer.listen(source, timeout=5)
+if uploaded_file:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(uploaded_file.read())
+        pdf_path = tmp.name
 
-        try:
-            voice_input = recognizer.recognize_google(audio)
-        except:
-            st.error("Could not understand voice input")
+    # Load PDF
+    loader = PyPDFLoader(pdf_path)
+    documents = loader.load()
 
-# ----------------------------
-# Chat UI
-# ----------------------------
-user_input = st.chat_input("Ask about the document...") or voice_input
-
-# Render chat history
-for msg in st.session_state.chat_history:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-# ----------------------------
-# Handle Chat
-# ----------------------------
-if user_input:
-    with st.chat_message("user"):
-        st.markdown(user_input)
-
-    st.session_state.chat_history.append(
-        {"role": "user", "content": user_input}
+    # Embeddings
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-    langchain_history = []
-    for msg in st.session_state.chat_history:
-        if msg["role"] == "user":
-            langchain_history.append(HumanMessage(content=msg["content"]))
-        else:
-            langchain_history.append(AIMessage(content=msg["content"]))
+    # Vector Store
+    vectorstore = FAISS.from_documents(documents, embeddings)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
-    with st.chat_message("assistant"):
+    # --------------------------------------------------
+    # PROMPT
+    # --------------------------------------------------
+    prompt = ChatPromptTemplate.from_template(
+        """
+        You are a helpful AI assistant.
+        Answer the question ONLY using the context below.
+        If the answer is not present, say "I couldn't find that in the document."
+
+        Context:
+        {context}
+
+        Question:
+        {question}
+        """
+    )
+
+    # --------------------------------------------------
+    # RAG CHAIN (NEW v0.2 STYLE)
+    # --------------------------------------------------
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+
+    rag_chain = (
+        {
+            "context": retriever | format_docs,
+            "question": RunnablePassthrough(),
+        }
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+
+    # --------------------------------------------------
+    # CHAT UI
+    # --------------------------------------------------
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    user_input = st.chat_input("Ask something about the document...")
+
+    if user_input:
+        st.session_state.chat_history.append(("user", user_input))
+
         with st.spinner("Thinking..."):
-            response = agent_executor.invoke({
-                "input": user_input,
-                "chat_history": langchain_history
-            })
+            response = rag_chain.invoke(user_input)
 
-            answer = response.get("output", "No response.")
-            st.markdown(answer)
+        st.session_state.chat_history.append(("ai", response))
 
-    st.session_state.chat_history.append(
-        {"role": "assistant", "content": answer}
-    )
+    # Display chat
+    for role, msg in st.session_state.chat_history:
+        if role == "user":
+            st.chat_message("user").write(msg)
+        else:
+            st.chat_message("assistant").write(msg)
+
+else:
+    st.info("📂 Upload a PDF to start chatting.")
