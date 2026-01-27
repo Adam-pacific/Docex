@@ -18,22 +18,23 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not GROQ_API_KEY:
-    st.error("❌ GROQ_API_KEY missing (set it in Streamlit Secrets)")
+    st.error("❌ GROQ_API_KEY missing")
     st.stop()
 
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="DocEx", page_icon="📄", layout="wide")
-st.title("📄 DocEx — Chat with Documents & Websites")
+st.title("📄 DocEx — Chat with Documents, Websites & General AI")
 
 st.caption(
-    "DocEx is an AI-powered chatbot that lets you chat with documents and websites using Retrieval-Augmented Generation (RAG)."
+    "DocEx answers questions from your documents and websites using RAG, "
+    "and can also respond to general questions using its own knowledge."
 )
 
 # ---------------- LLM ----------------
 llm = ChatGroq(
     groq_api_key=GROQ_API_KEY,
     model_name="llama-3.1-8b-instant",
-    temperature=0.2
+    temperature=0.3
 )
 
 # ---------------- SESSION STATE ----------------
@@ -44,10 +45,10 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 # ---------------- SIDEBAR ----------------
-st.sidebar.header("📥 Data Sources")
+st.sidebar.header("📥 Knowledge Source")
 
 source_type = st.sidebar.radio(
-    "Choose input source",
+    "Choose source",
     ["Upload PDF", "Website URL"]
 )
 
@@ -56,7 +57,6 @@ embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
-# ---------------- TEXT SPLITTER ----------------
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=800,
     chunk_overlap=150
@@ -100,55 +100,80 @@ if source_type == "Website URL":
 
         st.sidebar.success(f"✅ Indexed {len(docs)} chunks from website")
 
-# ---------------- RAG CHAIN ----------------
-if st.session_state.vectordb:
+# ---------------- PROMPTS ----------------
+rag_prompt = ChatPromptTemplate.from_template(
+    """
+    You are DocEx, an AI assistant.
+    Answer the question using the context below.
+    If context is irrelevant, answer normally using your own knowledge.
 
-    retriever = st.session_state.vectordb.as_retriever(search_kwargs={"k": 4})
+    Context:
+    {context}
 
-    prompt = ChatPromptTemplate.from_template(
-        """
-        You are DocEx, an AI assistant.
-        Answer the question strictly using the provided context.
-        If the answer is not present, say you don't know.
+    Question:
+    {question}
 
-        Context:
-        {context}
+    Answer:
+    """
+)
 
-        Question:
-        {question}
+general_prompt = ChatPromptTemplate.from_template(
+    """
+    You are DocEx, a helpful AI assistant.
+    Answer the following question clearly and concisely.
 
-        Answer:
-        """
-    )
+    Question:
+    {question}
 
-    def format_docs(docs):
-        return "\n\n".join(d.page_content for d in docs)
+    Answer:
+    """
+)
 
-    rag_chain = (
-        {
-            "context": retriever | format_docs,
-            "question": RunnablePassthrough()
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+def format_docs(docs):
+    return "\n\n".join(d.page_content for d in docs)
 
-    # ---------------- CHAT INPUT ----------------
-    user_query = st.chat_input("Ask a question...")
+# ---------------- CHAT ----------------
+user_query = st.chat_input("Ask anything...")
 
-    if user_query:
-        st.session_state.chat_history.append(("user", user_query))
+if user_query:
+    st.session_state.chat_history.append(("user", user_query))
 
-        with st.spinner("Thinking..."):
-            answer = rag_chain.invoke(user_query)
+    with st.spinner("Thinking..."):
 
-        st.session_state.chat_history.append(("assistant", answer))
+        answer = None
 
-    # ---------------- DISPLAY CHAT ----------------
-    for role, message in st.session_state.chat_history:
-        with st.chat_message(role):
-            st.write(message)
+        # 👉 Try RAG first if documents exist
+        if st.session_state.vectordb:
+            retriever = st.session_state.vectordb.as_retriever(
+                search_kwargs={"k": 4}
+            )
+            retrieved_docs = retriever.get_relevant_documents(user_query)
 
-else:
-    st.info("👈 Upload a PDF or load a website to start chatting")
+            # If meaningful context exists → RAG
+            if retrieved_docs and len(format_docs(retrieved_docs).strip()) > 200:
+                rag_chain = (
+                    {
+                        "context": lambda _: format_docs(retrieved_docs),
+                        "question": RunnablePassthrough()
+                    }
+                    | rag_prompt
+                    | llm
+                    | StrOutputParser()
+                )
+                answer = rag_chain.invoke(user_query)
+
+        # 👉 Fallback to general LLM
+        if not answer:
+            general_chain = (
+                general_prompt
+                | llm
+                | StrOutputParser()
+            )
+            answer = general_chain.invoke({"question": user_query})
+
+    st.session_state.chat_history.append(("assistant", answer))
+
+# ---------------- DISPLAY CHAT ----------------
+for role, message in st.session_state.chat_history:
+    with st.chat_message(role):
+        st.write(message)
