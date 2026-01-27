@@ -11,7 +11,6 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
 
 # ---------------- ENV ----------------
 load_dotenv()
@@ -33,7 +32,7 @@ st.caption(
 # ---------------- LLM ----------------
 llm = ChatGroq(
     groq_api_key=GROQ_API_KEY,
-    model_name="llama-3.1-8b-instant",
+    model_name="llama-3.1-8b-instant",  # ✅ supported model
     temperature=0.3
 )
 
@@ -139,30 +138,28 @@ if user_query:
     st.session_state.chat_history.append(("user", user_query))
 
     with st.spinner("Thinking..."):
-
         answer = None
 
-        # 👉 Try RAG first if documents exist
+        # 👉 RAG if documents exist
         if st.session_state.vectordb:
-            retriever = st.session_state.vectordb.as_retriever(
-                search_kwargs={"k": 4}
-            )
-            retrieved_docs = retriever.get_relevant_documents(user_query)
+            retriever = st.session_state.vectordb.as_retriever(search_kwargs={"k": 4})
 
-            # If meaningful context exists → RAG
-            if retrieved_docs and len(format_docs(retrieved_docs).strip()) > 200:
+            # ✅ FIXED: new LangChain API
+            retrieved_docs = retriever.invoke(user_query)
+
+            if retrieved_docs and len(format_docs(retrieved_docs)) > 200:
                 rag_chain = (
-                    {
-                        "context": lambda _: format_docs(retrieved_docs),
-                        "question": RunnablePassthrough()
-                    }
-                    | rag_prompt
+                    rag_prompt
                     | llm
                     | StrOutputParser()
                 )
-                answer = rag_chain.invoke(user_query)
 
-        # 👉 Fallback to general LLM
+                answer = rag_chain.invoke({
+                    "context": format_docs(retrieved_docs),
+                    "question": user_query
+                })
+
+        # 👉 General AI fallback
         if not answer:
             general_chain = (
                 general_prompt
