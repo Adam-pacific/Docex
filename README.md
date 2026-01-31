@@ -21,6 +21,9 @@ DocEx is an AI-powered chatbot that allows users to chat with documents and webs
 
 ## ⚙️ Setup
 
+## Link
+https://docexai.streamlit.app/
+
 ```bash
 git clone https://github.com/Adam-pacific/Docex.git
 cd Docex
